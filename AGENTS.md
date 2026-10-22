@@ -1,48 +1,56 @@
 # Repository Guidelines
 
-本文档面向贡献者，概述本仓库的模块结构、开发流程与提交规范，便于快速上手并保持一致的协作质量。
+## Project Overview
+
+RikkaHub is a native Android LLM chat client that supports switching between different AI providers
+for conversations.
+Built with Jetpack Compose, Kotlin, and follows Material 3 Expressive (MD3 Expressive) design language.
+
+## Design Language
+
+The UI follows Material 3 Expressive. New and reworked screens should match it rather than the older baseline
+Material 3 look (cards with dividers, plain forms).
+
+- The app theme is `MaterialExpressiveTheme` (app/src/main/java/me/rerere/rikkahub/ui/theme/Theme.kt); prefer the
+  expressive variants of components, shapes (`MaterialShapes`), emphasized typography (e.g. `titleSmallEmphasized`)
+  and motion from `androidx.compose.material3` over hand-rolled equivalents.
+- Settings-style and form pages use segmented groups via `CardGroup` (
+  app/src/main/java/me/rerere/rikkahub/ui/components/ui/CardGroup.kt) instead of a card with dividers.
+- Favor larger corner radii, filled/tonal containers, and whole-row click targets.
 
 ## Build, Test, and Development Commands
 
-使用 Android Studio 或命令行 Gradle：
-
 ```bash
-./gradlew assembleDebug          # 构建 Debug APK
+./gradlew assembleGithubDebug    # 构建 GitHub 渠道的 Debug APK
+./gradlew assembleGithubRelease  # 构建 GitHub Release / 每日构建用的 APK
+./gradlew bundlePlayRelease      # 构建上架 Google Play 的 AAB
 ./gradlew test                   # 运行所有模块的 JVM 单元测试
-./gradlew connectedDebugAndroidTest  # 运行设备/模拟器上的仪器测试
 ./gradlew lint                   # 运行 Android Lint
+./gradlew spotlessApply          # 用 ktlint 格式化相对 origin/master 改动过的 Kotlin 文件
+./gradlew spotlessCheck          # 只检查格式不改文件
 ```
 
-构建应用需要在 `app/` 下提供 `google-services.json`（用于 Firebase）。
-
-## Coding Style & Naming Conventions
-
-本仓库使用 `.editorconfig` 统一格式：
-
-- Kotlin/Gradle 脚本：4 空格缩进，最大行长 120。
-- XML/JSON：2 空格缩进。
-- Markdown/YAML：2 空格缩进，允许尾随空格（用于对齐）。
-
-命名习惯：模块名为小写目录（如 `ai/`、`tts/`），Kotlin 类遵循 PascalCase，测试类以 `*Test` 结尾。
-
-## Testing Guidelines
-
-测试框架以 JUnit/AndroidX Test 为主。未设定强制覆盖率门槛，但新逻辑应配套新增/更新测试。测试文件命名建议：
-
-- 单元测试：`FooTest.kt`
-- 仪器测试：`FooInstrumentedTest.kt` 或 `*Test.kt`
+App 有一个 `distribution` 维度的 product flavor：`github`（默认）和 `play`，共用同一个 applicationId。
+渠道差异用 `BuildConfig.IS_PLAY_STORE` 判断（如 Play 版不检查更新、不显示更新提醒）。
 
 ## Module Structure
 
 - **app**: Main application module with UI, ViewModels, and core logic
 - **ai**: AI SDK abstraction layer for different providers (OpenAI, Google, Anthropic)
 - **common**: Common utilities and extensions
-- **document**: Document parsing module for handling PDF, DOCX, and PPTX files
+- **document**: Document parsing module for handling PDF, DOCX, PPTX, and EPUB files
 - **highlight**: Code syntax highlighting implementation
-- **search**: Search functionality SDK (Exa, Tavily, Zhipu)
-- **tts**: Text-to-speech implementation for different providers
+- **material3**: Material color utility extensions used by the app UI
+- **ui**: Reusable Compose UI components that do not depend on app logic
+- **search**: Search functionality SDK for multiple providers (Exa, Tavily, Zhipu, Bing, Brave, SearXNG, and others)
+- **speech**: Speech module for TTS and ASR implementations
 - **web**: Embedded web server module that provides Ktor server startup function and hosts static frontend build files (
   built from web-ui/ React project)
+- **workspace**: Sandboxed per-workspace file system and shell execution environment exposed to the AI as tools.
+- **terminal**: Terminal emulator core taken from termux-app's `terminal-emulator` (package `com.termux.terminal`, kept
+  binary compatible with the `terminal-view` aar). `TerminalSession` runs over a `TerminalTransport`: local PRoot
+  terminals use `LocalPtyTransport`, SSH workspaces use the app's `SshTerminalTransport`. Origin and local changes are
+  listed in terminal/README.md.
 
 ## Concepts
 
@@ -53,8 +61,17 @@
 
 - **Conversation**: A persistent conversation thread between the user and an assistant. Each conversation maintains a
   list of MessageNodes in a tree structure to support message branching, along with metadata like title, creation time,
-  and pin status. Conversations can be truncated at a specific index and maintain chat suggestions. (
-  app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt)
+  update time, pin status, chat suggestions, optional conversation-level system prompt, and prompt injection bindings.
+  Once a conversation is persisted it also holds a `ConversationConfig` snapshot (chat model, reasoning level, search,
+  MCP servers, workspace, skills) taken from the assistant; from then on chat-page changes to those settings stay on
+  the conversation, and code should read them through `Settings.getAssistantOf(conversation)` /
+  `Settings.getChatModelOf(conversation)` instead of the assistant directly. Once loaded, the in-memory
+  `ConversationSession` is the single source of truth: change a conversation through `ChatService` (which applies
+  `session.update { latest -> ... }` and then `flush()`), never by saving a whole `Conversation` snapshot or one read
+  back from the database; deleting also goes through `ChatService` so a running generation cannot re-insert it. (
+  app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt,
+  app/src/main/java/me/rerere/rikkahub/data/model/ConversationConfig.kt,
+  app/src/main/java/me/rerere/rikkahub/service/ConversationSession.kt)
 
 - **UIMessage**: A platform-agnostic message abstraction that encapsulates chat messages with different types of content
   parts (text, images, documents, reasoning, tool calls/results, etc.). Each message has a role (USER, ASSISTANT,
@@ -83,9 +100,10 @@
 
 ## Internationalization
 
-- String resources located in `app/src/main/res/values-*/strings.xml`
+- String resources are usually located in `app/src/main/res/values*/strings.xml`; feature modules such as `search`
+  may also maintain their own `values*/strings.xml`
 - Use `stringResource(R.string.key_name)` in Compose
 - Page-specific strings should use page prefix (e.g., `setting_page_`)
 - If the user does not explicitly request localization, prioritize implementing functionality without considering
   localization. (e.g `Text("Hello world")`)
-- For `locale-tui` operations, use the `locale-tui-localization` skill.
+- Add, translate or clean up strings with the `tools/i18n` CLI (Bun); see the `i18n-localization` skill.

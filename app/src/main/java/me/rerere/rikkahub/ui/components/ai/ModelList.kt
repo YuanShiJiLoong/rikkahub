@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.components.ai
 
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -34,7 +36,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -66,6 +70,7 @@ import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.ArrowDown01
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.Cancel01
@@ -83,14 +88,80 @@ import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
-import me.rerere.rikkahub.ui.components.ui.icons.HeartIcon
 import me.rerere.rikkahub.ui.context.LocalNavController
+import me.rerere.rikkahub.ui.hooks.rememberSharedPreferenceString
 import me.rerere.rikkahub.ui.theme.extendColors
 import me.rerere.rikkahub.utils.toDp
+import me.rerere.ui.icons.HeartIcon
 import org.koin.compose.koinInject
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.uuid.Uuid
+
+class ModelListState internal constructor(
+    modelId: Uuid?,
+    providers: List<ProviderSetting>,
+    type: ModelType,
+) {
+    var modelId by mutableStateOf(modelId)
+        private set
+
+    var providers by mutableStateOf(providers)
+        private set
+
+    var type by mutableStateOf(type)
+        private set
+
+    var visible by mutableStateOf(false)
+        private set
+
+    val currentModel: Model?
+        get() = modelId?.let { providers.findModelById(it) }
+
+    val filteredProviders: List<ProviderSetting>
+        get() = providers.fastFilter { provider ->
+            provider.enabled && provider.models.fastAny { model -> model.type == type }
+        }
+
+    fun open() {
+        visible = true
+    }
+
+    fun close() {
+        visible = false
+    }
+
+    internal fun update(
+        modelId: Uuid?,
+        providers: List<ProviderSetting>,
+        type: ModelType,
+    ) {
+        this.modelId = modelId
+        this.providers = providers
+        this.type = type
+    }
+}
+
+@Composable
+fun rememberModelListState(
+    modelId: Uuid?,
+    providers: List<ProviderSetting>,
+    type: ModelType,
+): ModelListState {
+    return remember {
+        ModelListState(
+            modelId = modelId,
+            providers = providers,
+            type = type,
+        )
+    }.also {
+        it.update(
+            modelId = modelId,
+            providers = providers,
+            type = type,
+        )
+    }
+}
 
 @Composable
 fun ModelSelector(
@@ -102,9 +173,35 @@ fun ModelSelector(
     allowClear: Boolean = false,
     onSelect: (Model) -> Unit
 ) {
-    var popup by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val model = providers.findModelById(modelId ?: Uuid.random())
+    val state = rememberModelListState(
+        modelId = modelId,
+        providers = providers,
+        type = type,
+    )
+
+    ModelSelectorButton(
+        state = state,
+        modifier = modifier,
+        onlyIcon = onlyIcon,
+        allowClear = allowClear,
+        onClear = { onSelect(Model()) },
+    )
+
+    ModelListSheet(
+        state = state,
+        onSelect = onSelect,
+    )
+}
+
+@Composable
+internal fun ModelSelectorButton(
+    state: ModelListState,
+    modifier: Modifier = Modifier,
+    onlyIcon: Boolean = false,
+    allowClear: Boolean = false,
+    onClear: () -> Unit = {},
+) {
+    val model = state.currentModel
 
     if (!onlyIcon) {
         Row(
@@ -112,7 +209,7 @@ fun ModelSelector(
         ) {
             TextButton(
                 onClick = {
-                    popup = true
+                    state.open()
                 },
                 modifier = modifier
             ) {
@@ -133,9 +230,7 @@ fun ModelSelector(
             }
             if (allowClear && model != null) {
                 IconButton(
-                    onClick = {
-                        onSelect(Model())
-                    }
+                    onClick = onClear,
                 ) {
                     Icon(
                         imageVector = HugeIcons.Cancel01,
@@ -147,7 +242,7 @@ fun ModelSelector(
     } else {
         IconButton(
             onClick = {
-                popup = true
+                state.open()
             },
         ) {
             if (model != null) {
@@ -165,44 +260,93 @@ fun ModelSelector(
             }
         }
     }
+}
 
-    if (popup) {
-        val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = {
-                popup = false
-            },
-            sheetState = state,
+// 显示当前模型的胶囊按钮，样式和 Select 保持一致，点击后由调用方打开模型列表
+@Composable
+internal fun ModelField(
+    model: Model?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        tonalElevation = 4.dp,
+        shape = CircleShape,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(8.dp)
-                    .fillMaxHeight(0.8f)
-                    .imePadding(),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                val filteredProviderSettings = providers.fastFilter {
-                    it.enabled && it.models.fastAny { model -> model.type == type }
-                }
-                ModelList(
-                    currentModel = modelId,
-                    providers = filteredProviderSettings,
-                    modelType = type,
-                    onSelect = {
-                        onSelect(it)
-                        scope.launch {
-                            state.hide()
-                            popup = false
-                        }
-                    },
-                    onDismiss = {
-                        scope.launch {
-                            state.hide()
-                            popup = false
-                        }
-                    }
+            if (model != null) {
+                AutoAIIcon(
+                    name = model.modelId,
+                    modifier = Modifier.size(24.dp),
+                    color = Color.Transparent,
                 )
             }
+            Text(
+                text = model?.displayName ?: stringResource(R.string.model_list_select_model),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = HugeIcons.ArrowDown01,
+                contentDescription = null,
+            )
+        }
+    }
+}
+
+@Composable
+fun ModelListSheet(
+    state: ModelListState,
+    onSelect: (Model) -> Unit,
+) {
+    if (!state.visible) return
+
+    val coroutineScope = rememberCoroutineScope()
+    val sheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+    )
+
+    fun dismiss() {
+        coroutineScope.launch {
+            sheetState.hide()
+            state.close()
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = {
+            state.close()
+        },
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(8.dp)
+                .fillMaxHeight(0.8f)
+                .imePadding(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            ModelList(
+                currentModel = state.modelId,
+                providers = state.filteredProviders,
+                modelType = state.type,
+                onSelect = {
+                    onSelect(it)
+                    dismiss()
+                },
+                onDismiss = {
+                    dismiss()
+                }
+            )
         }
     }
 }
@@ -229,6 +373,20 @@ private fun ColumnScope.ModelList(
 
     var searchKeywords by remember { mutableStateOf("") }
 
+    // 折叠的供应商（持久化），搜索时全部展开
+    var collapsedProvidersPref by rememberSharedPreferenceString("model_list_collapsed_providers", "")
+    val collapsedProviders = remember(collapsedProvidersPref) {
+        collapsedProvidersPref.orEmpty().split(",").filter { it.isNotBlank() }.toSet()
+    }
+    fun isCollapsed(provider: ProviderSetting): Boolean =
+        searchKeywords.isBlank() && provider.id.toString() in collapsedProviders
+
+    fun toggleCollapsed(provider: ProviderSetting) {
+        val id = provider.id.toString()
+        collapsedProvidersPref = (if (id in collapsedProviders) collapsedProviders - id else collapsedProviders + id)
+            .joinToString(",")
+    }
+
     val typeFilteredModelsByProvider = remember(providers, modelType) {
         providers.associate { provider ->
             provider.id to provider.models.fastFilter { it.type == modelType }
@@ -243,8 +401,15 @@ private fun ColumnScope.ModelList(
         }
     }
 
+    val visibleModelsByProvider = remember(providers, searchFilteredModelsByProvider, collapsedProviders, searchKeywords) {
+        providers.associate { provider ->
+            provider.id to if (isCollapsed(provider)) emptyList() else searchFilteredModelsByProvider[provider.id].orEmpty()
+        }
+    }
+
     // 计算当前选中模型的位置
     val selectedModelPosition = remember(currentModel, favoriteModels, providers, typeFilteredModelsByProvider) {
+        // 仅用于初始定位，搜索关键词此时为空
         if (currentModel == null) return@remember 0
 
         var position = 0
@@ -275,11 +440,14 @@ private fun ColumnScope.ModelList(
             position += 1 // provider header
             val models = typeFilteredModelsByProvider[provider.id].orEmpty()
             val modelIndex = models.indexOfFirst { it.id == currentModel }
+            val collapsed = isCollapsed(provider)
             if (modelIndex >= 0) {
+                // 折叠时定位到供应商标题
+                if (collapsed) return@remember position - 1
                 position += modelIndex
                 return@remember position
             }
-            position += models.size
+            if (!collapsed) position += models.size
         }
 
         0
@@ -317,7 +485,7 @@ private fun ColumnScope.ModelList(
     }
     val haptic = LocalHapticFeedback.current
 
-    val providerPositions = remember(providers, favoriteModels, searchFilteredModelsByProvider) {
+    val providerPositions = remember(providers, favoriteModels, visibleModelsByProvider) {
         var currentIndex = 0
         if (providers.isEmpty()) {
             currentIndex = 1 // no providers item
@@ -330,7 +498,7 @@ private fun ColumnScope.ModelList(
         providers.map { provider ->
             val position = currentIndex
             currentIndex += 1 // provider header
-            currentIndex += searchFilteredModelsByProvider[provider.id].orEmpty().size
+            currentIndex += visibleModelsByProvider[provider.id].orEmpty().size
             provider.id to position
         }.toMap()
     }
@@ -453,13 +621,25 @@ private fun ColumnScope.ModelList(
         }
 
         providers.fastForEach { providerSetting ->
+            val collapsed = isCollapsed(providerSetting)
             stickyHeader(key = "header:${providerSetting.id}") {
                 Row(
                     modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.small)
+                        .clickable { toggleCollapsed(providerSetting) }
                         .padding(horizontal = 8.dp)
                         .padding(bottom = 4.dp, top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    Icon(
+                        imageVector = if (collapsed) HugeIcons.ArrowRight01 else HugeIcons.ArrowDown01,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+
                     Text(
                         text = providerSetting.name,
                         style = MaterialTheme.typography.labelMedium,
@@ -468,7 +648,7 @@ private fun ColumnScope.ModelList(
 
                     Spacer(modifier = Modifier.weight(1f))
 
-                    ProviderBalanceText(
+                    ProviderQuotaText(
                         providerSetting = providerSetting,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
@@ -477,7 +657,7 @@ private fun ColumnScope.ModelList(
             }
 
             items(
-                items = searchFilteredModelsByProvider[providerSetting.id].orEmpty(),
+                items = visibleModelsByProvider[providerSetting.id].orEmpty(),
                 key = { it.id }
             ) { model ->
                 val favorite = settings.value.favoriteModels.contains(model.id)
